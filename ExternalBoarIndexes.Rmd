@@ -1,0 +1,607 @@
+---
+title:
+output: 
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: 0px;
+  margin-right: 0px
+}
+</style>
+
+<h1><center>Boar Index Trends</h1>
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(DT)
+library(readr)
+library(here)
+library(kableExtra)
+library(gridExtra)
+library(ggpubr)
+library(lme4)
+library(effects)
+
+source('C:/Users/vance/Documents/myR/functions/getSQL.r')
+
+
+query1<- "SELECT  a.[spg_id]
+      ,[idx_name]
+      ,[idx_date]
+      ,[idx]
+	  ,[vendor_visual]
+	  ,[vendor_breed_code]
+	  ,[spg_visual]
+  FROM [OADB].[dbo].[idxHistory] a
+  INNER JOIN [OADB].[dbo].[Boars] b on a.spg_id=b.spg_id"
+ext1<-getSQL('Intranet',query=query1)
+
+query2<- "SELECT a.[StudID]
+	  ,a.[Date_Shipped]
+      ,a.[BatchNum]
+	  ,b.[BoarID]
+  FROM [Intranet].[dbo].[Boar_Distrib] a
+  INNER JOIN [Intranet].[dbo].[Boar_Split] b on a.[BatchNum]=b.[BatchNum] and a.StudID=b.StudID
+  WHERE [Dest]!='* TRASH *'
+  AND [Date_Shipped]>'2021-06-01'
+  AND [Breed] in ('PICL02','PICL03','DNA200','DNA400')"
+ext2<-getSQL('Intranet',query=query2)
+
+query3<-"SELECT a.[BoarID]
+      ,a.[Breed]
+      ,a.[Date_Arrival]
+      ,a.[Name]
+	  ,b.[idx]
+  FROM [Intranet].[dbo].[Boar_Pig] a
+  inner join [OADB].[reports].[idxCurrent] b on a.[Name] = b.[spg_id]
+  WHERE [Breed] in ('PICL02', 'PICL03','DNA200','DNA400')
+  and [Status] = 'WORKING'"
+
+ext3<-getSQL('Intranet', query = query3)
+
+ext4<-ext1 %>%
+  mutate(idx_date=as.Date(idx_date),
+         idx_newdate=idx_date+3,
+         idx_week=floor_date(x = idx_newdate,unit = "week",week_start = 1),
+         code=paste(spg_visual,idx_week),
+         std_idx=ifelse(vendor_breed_code%in%c('PICL02','PICL03'),(idx-100)/20,
+                        ifelse(vendor_breed_code%in%c('DNA200','DNA400'),(idx-100)/12,0)))
+
+ext4<-ext4[!duplicated(ext4$code),]
+
+ext5<-ext4 %>%
+  filter(idx_week>=floor_date(x = today(),unit = "week",week_start = 1)-91,
+         vendor_breed_code%in%c('PICL02', 'PICL03','DNA200','DNA400')) %>%
+  mutate(spg_visual=as.character(paste(vendor_visual)),
+         'Breed'=ifelse(vendor_breed_code=='DNA200','DNA200 (LW)',
+                        ifelse(vendor_breed_code=='DNA400','DNA400 (LR)',
+                               ifelse(vendor_breed_code=='PICL03','PICL03 (LW)',
+                                      ifelse(vendor_breed_code=='PICL02','PICL02 (LR)',0)))))
+
+ext6<-ext5 %>%
+  group_by(Breed, idx_week) %>%
+  summarise(breed_idx=mean(std_idx))
+
+
+ext7<-ext2 %>%
+  mutate(ship_week=floor_date(x = Date_Shipped,unit = "week",week_start = 1),
+         code=paste(BoarID,ship_week))
+
+ext7<-ext7[!duplicated(ext7$code),]
+
+ext8<-left_join(x = ext7,y = ext5,by=c("BoarID"="spg_visual","ship_week"="idx_week"))
+
+ext9<-ext8 %>%
+  filter(!is.na(std_idx)) %>%
+  group_by(Breed,ship_week) %>%
+  summarise(breed_idx=mean(std_idx))
+
+
+
+ext10<-ext3 %>%
+  mutate(Breed=ifelse(Breed=='DNA200','DNA200 (LW)',
+                        ifelse(Breed=='DNA400','DNA400 (LR)',
+                               ifelse(Breed=='PICL03','PICL03 (LW)',
+                                      ifelse(Breed=='PICL02','PICL02 (LR)',0)))),
+         std_idx=ifelse(Breed%in%c('PICL02 (LR)','PICL03 (LW)'),(idx-100)/20,
+                        ifelse(Breed%in%c('DNA200 (LW)','DNA400 (LR)'),(idx-100)/12,0)))
+
+ext11<-ext10 %>%
+  group_by(Breed) %>%
+  summarise('Mean Std Index'=mean(std_idx))
+
+ext11a<-ext10 %>% 
+  group_by(Breed) %>% 
+  summarise('Standard Deviation'=sd(std_idx))
+
+ext11b<-left_join(x = ext11,y = ext11a, by=c("Breed"="Breed"))
+
+ext12<-ext4 %>%
+  group_by(spg_visual) %>%
+  filter(idx_week==min(idx_week))
+
+ext13<-ext12 %>%
+  group_by(vendor_breed_code) %>%
+  summarise('Avg Std Index'=mean(std_idx)) %>% 
+  mutate('Breed'=ifelse(vendor_breed_code=='DNA200','DNA200 (LW)',
+                        ifelse(vendor_breed_code=='DNA400','DNA400 (LR)',
+                               ifelse(vendor_breed_code=='PICL03','PICL03 (LW)',
+                                      ifelse(vendor_breed_code=='PICL02','PICL02 (LR)',0)))))
+
+ext14<-ext12 %>%
+  group_by(vendor_breed_code) %>%
+  summarise("Boars"=n())
+
+ext15<-left_join(x = ext14,y = ext13,by=c("vendor_breed_code"="vendor_breed_code")) %>%
+  filter(vendor_breed_code%in%c('PICL02', 'PICL03','DNA200','DNA400'))
+
+ext15a<-ext12 %>% 
+  group_by(vendor_breed_code) %>% 
+  summarise("Standard Deviation"=sd(std_idx))
+
+ext15b<-left_join(x = ext15,y = ext15a,by=c("vendor_breed_code"="vendor_breed_code")) %>% 
+  select(c(4,2,3,5))
+
+
+query4<-"SELECT [BOARID]
+      ,[BREED]
+      ,[COL_DATE]
+      ,[STATUS]
+      ,[TOT_SPERM]
+      ,[VAL1]
+      ,[VAL2]
+  FROM [Intranet].[dbo].[Boar_Collection]
+  WHERE [COL_DATE]>'2021-06-01'
+  and [BREED] in ('200','400','L02','L03')"
+
+ext16<-getSQL('Intranet', query = query4)
+ext17<-ext16 %>%
+  mutate(col_week=floor_date(x = COL_DATE,unit = "week",week_start = 1),
+         Breed=ifelse(BREED=='200  ','DNA200 (LW)',
+                        ifelse(BREED=='400  ','DNA400 (LR)',
+                               ifelse(BREED=='L03  ','PICL03 (LW)',
+                                      ifelse(BREED=='L02  ','PICL02 (LR)',0)))))
+
+ext18<-ext17 %>%
+  group_by(Breed,col_week) %>%
+  summarise(colls=n())
+
+ext19<-ext17 %>%
+  group_by(Breed, col_week) %>%
+  filter(STATUS=='TR') %>%
+  summarise(trash=n())
+
+ext20<-left_join(x = ext18,y = ext19,by=c("Breed"="Breed","col_week"="col_week"))
+
+ext20[is.na(ext20)]<-0
+
+ext20$`Trash Rate`<-(ext20$trash/ext20$colls)*100
+
+ext21<-ext17 %>%
+  group_by(Breed,col_week) %>%
+  summarise('Doses/Collection'=(mean(TOT_SPERM)/2))
+
+ext22<-ext17 %>%
+  group_by(Breed,col_week) %>%
+  summarise('Avg Motility Score'=mean(VAL1))
+
+ext23<-ext4 %>%
+  filter(vendor_breed_code%in%c('PICL02', 'PICL03','DNA200','DNA400')) %>%
+  mutate(spg_visual=as.character(paste(vendor_visual)),
+         'Breed'=ifelse(vendor_breed_code=='DNA200','DNA200 (LW)',
+                        ifelse(vendor_breed_code=='DNA400','DNA400 (LR)',
+                               ifelse(vendor_breed_code=='PICL03','PICL03 (LW)',
+                                      ifelse(vendor_breed_code=='PICL02','PICL02 (LR)',0)))))
+
+ext12a<-ext12 %>% 
+  select(c(1,9))
+
+ext24<-left_join(x = ext23,y = ext12a,by=c("spg_id"="spg_id")) %>% 
+  mutate('weeks'=as.numeric((idx_week.x-idx_week.y)/7))
+
+ext24a<-ext24 %>% 
+  group_by(idx_week.x, Breed) %>% 
+  filter(weeks==0) %>% 
+  summarise('New Boars'=mean(std_idx))
+
+ext24b<-ext24 %>% 
+  group_by(idx_week.x, Breed) %>% 
+  filter(weeks>0) %>% 
+  summarise('Old Boars'=mean(std_idx))
+
+ext24c<-left_join(x = ext24b,y = ext24a, by=c("idx_week.x"="idx_week.x","Breed"="Breed"))
+
+ext24d<-ext24c %>% 
+  filter(!is.na(`New Boars`)) %>% 
+  group_by(Breed) %>% 
+  summarise('Incoming Boars'=mean(`New Boars`))
+
+ext24e<-ext24c %>% 
+  filter(!is.na(`New Boars`)) %>% 
+  group_by(Breed) %>% 
+  summarise('Boars in Stud'=mean(`Old Boars`))
+
+ext24f<-left_join(x = ext24d,y = ext24e, by=c("Breed"="Breed"))
+
+ext24g<-left_join(x = ext15b,y = ext24f,by=c("Breed"="Breed"))
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+###Generating Index Slopes####
+ext25a<-ext24 %>% 
+  filter(vendor_breed_code=='DNA200',
+         !is.na(weeks))
+ext25b<-ext24 %>% 
+  filter(vendor_breed_code=='DNA400',
+         !is.na(weeks))
+
+ext26<-ext24 %>% 
+  filter(vendor_breed_code=='PICL03',
+         !is.na(weeks))
+ext26a<-ext24 %>% 
+  filter(vendor_breed_code=='PICL02',
+         !is.na(weeks))
+
+###DNA Calculations###
+
+lm200a<-lmer(std_idx~weeks+(1|vendor_visual), data = ext25a)
+lm200b<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext25a, weeks%in%c(0:13)))
+lm200c<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext25a, weeks%in%c(14:26)))
+lm200d<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext25a, weeks%in%c(27:39)))
+lm200e<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext25a, weeks%in%c(40:52)))
+
+eff1<-as.data.frame(x=fixef(lm200a))
+eff2<-as.data.frame(x=fixef(lm200b))
+eff3<-as.data.frame(x=fixef(lm200c))
+eff4<-as.data.frame(x=fixef(lm200d))
+eff5<-as.data.frame(x=fixef(lm200e))
+
+lm400a<-lmer(std_idx~weeks+(1|vendor_visual), data = ext25b)
+lm400b<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext25b, weeks%in%c(0:13)))
+lm400c<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext25b, weeks%in%c(14:26)))
+lm400d<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext25b, weeks%in%c(27:39)))
+lm400e<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext25b, weeks%in%c(40:52)))
+
+eff6<-as.data.frame(x=fixef(lm400a))
+eff7<-as.data.frame(x=fixef(lm400b))
+eff8<-as.data.frame(x=fixef(lm400c))
+eff9<-as.data.frame(x=fixef(lm400d))
+eff10<-as.data.frame(x=fixef(lm400e))
+
+eff11<-cbind(eff1,eff2,eff3,eff4,eff5)
+colnames(eff11)<-c('All Time','0-13 Weeks','14-26 Weeks','27-39 Weeks','40-52 Weeks')
+rownames(eff11)<-c('Intercept','DNA200')
+eff12<-eff11[2,]
+
+eff13<-cbind(eff6,eff7,eff8,eff9,eff10)
+colnames(eff13)<-c('All Time','0-13 Weeks','14-26 Weeks','27-39 Weeks','40-52 Weeks')
+rownames(eff13)<-c('Intercept','DNA400')
+eff14<-eff13[2,]
+
+eff15<-rbind(eff12,eff14)
+
+###PIC Calculations###
+
+lml03a<-lmer(std_idx~weeks+(1|vendor_visual), data = ext26)
+lml03b<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext26, weeks%in%c(0:13)))
+lml03c<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext26, weeks%in%c(14:26)))
+lml03d<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext26, weeks%in%c(27:39)))
+lml03e<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext26, weeks%in%c(40:52)))
+
+eff16<-as.data.frame(x=fixef(lml03a))
+eff17<-as.data.frame(x=fixef(lml03b))
+eff18<-as.data.frame(x=fixef(lml03c))
+eff19<-as.data.frame(x=fixef(lml03d))
+eff20<-as.data.frame(x=fixef(lml03e))
+
+lml02a<-lmer(std_idx~weeks+(1|vendor_visual), data = ext26a)
+lml02b<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext26a, weeks%in%c(0:13)))
+lml02c<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext26a, weeks%in%c(14:26)))
+lml02d<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext26a, weeks%in%c(27:39)))
+lml02e<-lmer(std_idx~weeks+(1|vendor_visual), data = subset(ext26a, weeks%in%c(40:52)))
+
+eff21<-as.data.frame(x=fixef(lml02a))
+eff22<-as.data.frame(x=fixef(lml02b))
+eff23<-as.data.frame(x=fixef(lml02c))
+eff24<-as.data.frame(x=fixef(lml02d))
+eff25<-as.data.frame(x=fixef(lml02e))
+
+eff26<-cbind(eff16,eff17,eff18,eff19,eff20)
+colnames(eff26)<-c('All Time','0-13 Weeks','14-26 Weeks','27-39 Weeks','40-52 Weeks')
+rownames(eff26)<-c('Intercept','PICL03')
+eff27<-eff26[2,]
+
+eff28<-cbind(eff21,eff22,eff23,eff24,eff25)
+colnames(eff28)<-c('All Time','0-13 Weeks','14-26 Weeks','27-39 Weeks','40-52 Weeks')
+rownames(eff28)<-c('Intercept','PICL02')
+eff29<-eff28[2,]
+
+eff30<-rbind(eff27,eff29)
+
+```
+
+
+
+<h2><center>`r year(floor_date(today(),unit = "week",week_start = 5)-7)` Week `r isoweek(floor_date(today(),unit = "week", week_start = 1)-7)`</h2>
+<br>
+<h5>This report tracks the index trends for boars across all genetic companies within Smithfield Hog Production. It is important to keep in mind each company uses different base populations, standard deviations, replacement rates, and such so that comparisons cannot be directly made from one company to another. For this reason, the report is broken apart into sections for each company. At the end of this report, there is are some charts plotting semen quality parameters across all genetic companies.</h5>
+<br>
+<br>
+<h1>DNA Genetics</h1>
+<br>
+<h2>Individual Std Index Trend - By Date</h2>
+<h4>Plots all individuals in stud against their standardized index on that calendar week</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext5a<-ext5 %>% 
+  filter(vendor_breed_code=='DNA200')
+ext5b<-ext5 %>% 
+  filter(vendor_breed_code=='DNA400')
+
+plot1<-ggplot(data = ext5a, aes(x = idx_week,y = std_idx, colour=spg_id))+ geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ stat_summary(fun.y=mean,geom="line",lwd=2,aes(group=1))+ ggtitle("DNA200 (LW)")+ ylim(-2,2)
+
+plot2<-ggplot(data = ext5b, aes(x = idx_week,y = std_idx, colour=spg_id))+ geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ stat_summary(fun.y=mean,geom="line",lwd=2,aes(group=1))+ ggtitle("DNA400 (LR)")+ ylim(-2,2)
+
+grid.arrange(plot1,plot2, ncol=2, bottom="Week", left="Std Index")
+```
+
+<br>
+<br>
+<br>
+<h2>Individual Std Index Trend - By Weeks in Stud</h2>
+<h4>Plots all individuals in stud against their standardized index by number of weeks in stud. The table below shows the average index trend for specified time periods in the stud.</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+plot1a<-ggplot(data = ext25a, aes(x = weeks,y = std_idx, colour=spg_id))+ geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ stat_summary(fun.y=mean,geom="line",lwd=2,aes(group=1))+ ggtitle("DNA200 (LW)")+ ylim(-2,2)
+
+plot2a<-ggplot(data = ext25b, aes(x = weeks,y = std_idx, colour=spg_id))+ geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ stat_summary(fun.y=mean,geom="line",lwd=2,aes(group=1))+ ggtitle("DNA400 (LR)")+ ylim(-2,2)
+
+grid.arrange(plot1a,plot2a, ncol=2, bottom="Week", left="Std Index")
+
+kbl(eff15, align = 'c', digits = 4) %>% 
+  kable_styling()
+```
+
+<br>
+<br>
+<br>
+<h2>Std Index Trend - By Line</h2>
+<h4>Plots genetic line against their average standardized index by calendar week</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext6a<-ext6 %>% 
+  filter(Breed%in%c('DNA200 (LW)','DNA400 (LR)'))
+
+ext9a<-ext9 %>% 
+  filter(Breed%in%c('DNA200 (LW)','DNA400 (LR)'))
+
+plot5<-ggplot(data = ext6a, aes(x = idx_week,y = breed_idx, colour=Breed))+
+  geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ ylim(-2,2)+ ggtitle("All boars")
+
+plot6a<-ggplot(data = ext9a, aes(x = ship_week,y = breed_idx, colour=Breed))+
+  geom_line()+ theme(legend.position = "right", legend.direction = "horizontal")
+
+plot6<-ggplot(data = ext9a, aes(x = ship_week,y = breed_idx, colour=Breed))+
+  geom_line()+ theme(legend.position = "none", axis.title = element_blank()) + ylim(-2,2)+ ggtitle("Distributed")
+
+legend1<-get_legend(plot6a)
+
+lay<-rbind(c(1,2),
+           c(1,2),
+           c(3,3))
+
+grid.arrange(plot5,plot6,legend1, layout_matrix=lay)
+```
+
+<br>
+<br>
+<br>
+<h2>Current Std Index - By Line</h2>
+<h4>Table showing the current standardized index of boars in stud by line</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext11c<-ext11b %>% 
+  filter(Breed%in%c('DNA200 (LW)','DNA400 (LR)'))
+
+kbl(ext11c, align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+
+<br>
+<br>
+<br>
+<h2>Std Index at Arrival - By Line</h2>
+<h4>Table showing the average standardized index of boars at time of entry by line followed by a distribution of boar index at arrival</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext15c<-ext24g %>% 
+  filter(Breed%in%c('DNA200 (LW)','DNA400 (LR)'))
+
+kbl(ext15c, align = 'c', digits = 2) %>% 
+  kable_styling()
+
+ext12_200<-ext12 %>% 
+  filter(vendor_breed_code=='DNA200')
+
+hist200<-ggplot(data = ext12_200, aes(x = std_idx))+
+  geom_histogram(binwidth = 0.5)+labs(x='',y='', title='DNA200')
+
+ext12_400<-ext12 %>% 
+  filter(vendor_breed_code=='DNA400')
+
+hist400<-ggplot(data = ext12_400, aes(x = std_idx))+
+  geom_histogram(binwidth = 0.5)+labs(x='',y='', title='DNA400')
+
+
+grid.arrange(hist200,hist400,ncol=2,top='Boars At Arrival', bottom='Standardized Index', left='Number of Boars')
+```
+
+<br>
+<br>
+<h1>PIC Genetics</h1>
+<br>
+<h2>Individual Std Index Trend - By Date</h2>
+<h4>Plots all individuals in stud against their standardized index on that calendar week</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext5c<-ext5 %>% 
+  filter(vendor_breed_code=='PICL03')
+ext5d<-ext5 %>% 
+  filter(vendor_breed_code=='PICL02')
+
+plot3<-ggplot(data = ext5c, aes(x = idx_week,y = std_idx, colour=spg_visual))+ geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ stat_summary(fun.y=mean,geom="line",lwd=2,aes(group=1))+ ggtitle("PICL03 (LW)")+ ylim(-1,3)
+
+plot4<-ggplot(data = ext5d, aes(x = idx_week,y = std_idx, colour=spg_visual))+ geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ stat_summary(fun.y=mean,geom="line",lwd=2,aes(group=1))+ ggtitle("PICL02 (LR)")+ ylim(-1,3)
+
+grid.arrange(plot3,plot4, ncol=2, bottom="Week", left="Std Index")
+```
+
+<br>
+<br>
+<br>
+<h2>Individual Std Index Trend - By Weeks in Stud</h2>
+<h4>Plots all individuals in stud against their standardized index by number of weeks in stud. The table below shows the average index trend for specified time periods in the stud.</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+plot3a<-ggplot(data = ext26, aes(x = weeks,y = std_idx, colour=spg_id))+ geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ stat_summary(fun.y=mean,geom="line",lwd=2,aes(group=1))+ ggtitle("PICL03 (LW)")+ ylim(-1,3)
+
+plot4a<-ggplot(data = ext26a, aes(x = weeks,y = std_idx, colour=spg_id))+ geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ stat_summary(fun.y=mean,geom="line",lwd=2,aes(group=1))+ ggtitle("PICL02 (LR)")+ ylim(-1,3)
+
+grid.arrange(plot3a,plot4a, ncol=2, bottom="Week", left="Std Index")
+
+kbl(eff30, align = 'c', digits = 4) %>% 
+  kable_styling()
+```
+
+<br>
+<br>
+<br>
+<h2>Std Index Trend - By Line</h2>
+<h4>Plots genetic line against their average standardized index by calendar week</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext6b<-ext6 %>% 
+  filter(Breed%in%c('PICL03 (LW)','PICL02 (LR)'))
+
+ext9b<-ext9 %>% 
+  filter(Breed%in%c('PICL03 (LW)','PICL02 (LR)'))
+
+plot5a<-ggplot(data = ext6b, aes(x = idx_week,y = breed_idx, colour=Breed))+
+  geom_line()+ theme(legend.position = "none", axis.title = element_blank())+ ylim(0,3)+ ggtitle("All boars")
+
+plot6aa<-ggplot(data = ext9b, aes(x = ship_week,y = breed_idx, colour=Breed))+
+  geom_line()+ theme(legend.position = "right", legend.direction = "horizontal")
+
+plot6bb<-ggplot(data = ext9b, aes(x = ship_week,y = breed_idx, colour=Breed))+
+  geom_line()+ theme(legend.position = "none", axis.title = element_blank()) + ylim(0,3)+ ggtitle("Distributed")
+
+legend1<-get_legend(plot6aa)
+
+lay<-rbind(c(1,2),
+           c(1,2),
+           c(3,3))
+
+grid.arrange(plot5a,plot6bb,legend1, layout_matrix=lay)
+```
+
+<br>
+<br>
+<br>
+<h2>Current Std Index - By Line</h2>
+<h4>Table showing the current standardized index of boars in stud by line</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext11d<-ext11b %>% 
+  filter(Breed%in%c('PICL03 (LW)','PICL02 (LR)'))
+
+kbl(ext11d, align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+
+<br>
+<br>
+<br>
+<h2>Std Index at Arrival - By Line</h2>
+<h4>Table showing the average standardized index of boars at time of entry by line followed by a distribution of boar index at arrival</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext15d<-ext24g %>% 
+  filter(Breed%in%c('PICL03 (LW)','PICL02 (LR)'))
+
+kbl(ext15d, align = 'c', digits = 2) %>% 
+  kable_styling()
+
+ext12_L03<-ext12 %>% 
+  filter(vendor_breed_code=='PICL03')
+
+histL03<-ggplot(data = ext12_L03, aes(x = std_idx))+
+  geom_histogram(binwidth = 0.5)+labs(x='',y='', title='PICL03')
+
+ext12_L02<-ext12 %>% 
+  filter(vendor_breed_code=='PICL02')
+
+histL02<-ggplot(data = ext12_L02, aes(x = std_idx))+
+  geom_histogram(binwidth = 0.5)+labs(x='',y='', title='PICL02')
+
+
+grid.arrange(histL03,histL02,ncol=2,top='Boars At Arrival', bottom='Standardized Index', left='Number of Boars')
+```
+
+<br>
+<br>
+<br>
+<h1>Semen Quality Parameters</h1>
+<br>
+<h2>Trash Rate - By Line</h2>
+<h4>Table showing the average collection discard rate (%) by line</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext20a<-ext20 %>% 
+  filter(col_week>=floor_date(x = today(),unit = "week",week_start = 1)-91)
+
+ggplot(data = ext20a, aes(x = col_week,y = `Trash Rate`, colour=Breed))+
+  geom_line()+ theme(legend.position = "right")
+
+```
+
+<br>
+<br>
+<br>
+<h2>Doses per Collection - By Line</h2>
+<h4>Table showing the average number of standard (2B) doses produced by line</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext21a<-ext21 %>% 
+  filter(col_week>=floor_date(x = today(),unit = "week",week_start = 1)-91)
+
+ggplot(data = ext21a, aes(x = col_week,y = `Doses/Collection`, colour=Breed))+
+  geom_line()+ theme(legend.position = "right")
+```
+
+<br>
+<br>
+<br>
+<h2>Average Motility Score - By Line</h2>
+<h4>Table showing the average technician collection motility score by line</h4>
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ext22a<-ext22 %>% 
+  filter(col_week>=floor_date(x = today(),unit = "week",week_start = 1)-91)
+
+ggplot(data = ext22a, aes(x = col_week,y = `Avg Motility Score`, colour=Breed))+
+  geom_line()+ theme(legend.position = "right")
+```
+
